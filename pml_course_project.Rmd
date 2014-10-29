@@ -1,0 +1,215 @@
+---
+title: "Coursera's Practical Machine Learning Project"
+author: "Mateusz Jukiewicz"
+date: "Friday, October 24, 2014"
+output: html_document
+---
+
+## Getting and cleaning data
+
+#### General data cleaning
+This section shows a general process of obtaining a clean dataset from the raw
+data. Tidy dataset will then be used to perform exploratory data analysis and
+bulding the prediction model.
+
+Note about this section: as this process is not strictly related to the
+asignment, and I wanted to keep this document as brief as possible, I've decided
+not to desribe the process in text, but only in code comments, so the reader
+can read them if she/he is interested. I am also not printing the output of this
+code for the same reasons. Modify the .Rmd file if you wish to see the output.
+
+```{r cleaning1, results='hide', warning=FALSE}
+## getting training and test set
+trainSet <- read.csv("pml-training.csv", stringsAsFactors = FALSE)
+## this is the set to submit for the assignment
+testSet <- read.csv("pml-testing.csv", stringsAsFactors = FALSE)
+## I've noticed that some numeric columns in the training set are factors due to
+## untidy dataset. The same problem goes to test set, however the numeric
+## columns there are of type logical.
+## which columns in training and test set are not numeric?
+notNumColsTrain <- which(!(sapply(trainSet, class) %in% 
+                                   c("integer", "numeric")))
+notNumColsTest <- which(!(sapply(testSet, class) %in% 
+                                  c("integer", "numeric")))
+colnames(trainSet)[notNumColsTrain]
+colnames(testSet)[notNumColsTest]
+## the only non numeric columns that should actually be non numeric are
+## "user_name","cvtd_timestamp","new_window" (both sets) and "classe" (test set)
+## specifying columns to correct
+goodNotNumCols <- c("user_name", "cvtd_timestamp", "new_window")
+toCorrectTrain <- 
+        notNumColsTrain[!notNumColsTrain %in% 
+                                which(colnames(trainSet) %in% 
+                                              c(goodNotNumCols, "classe"))]
+toCorrectTest <- notNumColsTest[!notNumColsTest %in%
+                                        which(colnames(testSet) %in% 
+                                                               goodNotNumCols)]
+## correcting the columns
+## numeric to numeric
+trainSet[, toCorrectTrain] <- lapply(trainSet[, toCorrectTrain], as.numeric)
+testSet[, toCorrectTest] <- lapply(testSet[, toCorrectTest], as.numeric)
+## non numeric to factor (i don't see a problem in timestamp being factor here)
+trainSet[, c(goodNotNumCols, "classe")] <- 
+        lapply(trainSet[, c(goodNotNumCols, "classe")], factor)
+testSet[, goodNotNumCols] <- lapply(testSet[, goodNotNumCols], factor)
+```
+
+#### Data transformations based on exploratory data analysis
+
+This section describes the exploratory data analysis and transformations of the
+data that I've performed to build as good prediction model as possible.
+
+Note: this section is very briefly described with text and just one figure
+for the same reasons as for the section above. If interested in details, one can
+read the code comments.
+
+I've supposed that variables related to specific time of when the activity was
+performed is not relevant to the outcome variable, that is, to "how well" the
+activity was performed.
+
+I've also wanted to confirm that the subject ID (variable X) and name (variable 
+user_name) are not relevant either.
+
+Moreover, variables described above **should not** be contained in the model
+if they are not related to outcome, as the only thing they can introduce to
+the data is noise.
+
+Here are the plots that prove those assumptions. I've decided not to show them 
+as they are not too interesting (complete lack of separation between outcome 
+classes).
+
+```{r exploratory_analysis1,, fig.show='hide', results='hide', eval=FALSE}
+require(ggplot2)
+qplot(cvtd_timestamp, classe, data = trainSet, colour = classe, size = 5)
+qplot(raw_timestamp_part_1, classe, data = trainSet, colour = classe, size = 5)
+qplot(raw_timestamp_part_2, classe, data = trainSet, colour = classe, size = 5)
+qplot(raw_timestamp_part_1, raw_timestamp_part_2, data = trainSet, colour = classe, size = 5)
+qplot(raw_timestamp_part_1, raw_timestamp_part_2, data = trainSet, colour = classe)
+qplot(X, classe, data = trainSet, colour = classe)
+qplot(user_name, classe, data = trainSet, colour = classe)
+qplot(new_window, classe, data = trainSet, colour = classe)
+```
+
+I've managed to prove the suspected irrelevance of the variables used in plots
+above. However, one of the suspected variables, meaning of which I am unable
+to understand, seemed to possibly reveal some signal related to the outcome.
+
+```{r exploratory_analysis2, fig.height=3}
+require(ggplot2)
+qplot(num_window, classe, data = trainSet, colour = classe)
+```
+
+I've kept this variable as, proven by the tests, the model performed better 
+when with it.
+
+Code for transforming dataset basing on exploratory analysis. It consists the
+removal of variables described above, as well as removal of the variables with
+too many missing values or zero variance.
+
+```{r cleaning2, results='hide', eval=FALSE}
+## as concluded from exploratory data analysis, the following columns are not
+## relevant for specifying the outcome variable, therefore removing them:
+## cvtd_timestamp, raw_timestamp_part_1, raw_timestamp_part2 - related to time of the experiment
+## new_window - not sure what it is, but unrelevant (all classes for every factor)
+## user_name - not important with regard to specifying outcome
+## num_window - not sure what it is either, but seems to be related to outcome
+## (based on tests)
+trainSet <- subset(trainSet, select = -c(cvtd_timestamp, raw_timestamp_part_1,
+                                         raw_timestamp_part_2, new_window,
+                                         user_name))
+## columns with all NA values cannot be used, checking if there are any columns
+## like that and removing if so
+allNACheck <- colSums(is.na(trainSet)) == nrow(trainSet)
+trainSet <- trainSet[, !allNACheck]
+## removing columns with more than 95% of NA's inside, as there is not enough
+## information (in author's opinion) to impute those values, their variability
+## would be also very low anyway
+freqNACheck <- colSums(is.na(trainSet)) > nrow(trainSet)*0.95
+trainSet <- trainSet[, !freqNACheck]
+## checking whether there are columns with zero variance and removing them
+## if so, as they give no information for any ML algorithm
+zeroVarCheck <- sapply(trainSet, function(x) var(x, na.rm = T) == 0)
+trainSet <- trainSet[, !zeroVarCheck]
+```
+
+<b>Note: all actions I've performed to transform the dataset were actually
+tested and proved they improve the model performance.</b>
+
+## Building the model
+
+This section describes the process of building a prediction model. I decided
+to split the data with 1:4 ratio, where the bigger part was destinied for
+building the estimating the model, and the smaller part was destinied for
+estimating the expected out of sample error.
+
+I decided to use 10-fold cross validation to tune up the model on the
+training set. This was my personal choice.
+
+I decided not to use PCA dimensionality reduction. The variables seemed not to
+be correlated enough for the method to improve the model performance, therefore 
+the reduction of variability introduced by the PCA caused the model to be less
+efficient, according to the tests.
+
+I tested k nearest neighbours and median for value imputation. Chose the first
+one as it performed better according to the tests.
+
+```{r sample_ml0, results='hide', eval=FALSE}
+require(caret)
+## seed for reproducibility
+set.seed(910716)
+## preparing sets
+inTrain <- createDataPartition(y = trainSet$classe, p = 0.8, list = FALSE)
+training <- trainSet[inTrain, ]
+testing <- trainSet[-inTrain, ]
+## using knnImpute to impute missing values
+## not using PCA for compressing corelated variables
+preProcObj <- preProcess(subset(training, select = -c(classe, X)), 
+                         method = "knnImpute")
+## preprocessed training set
+trainingPC <- predict(preProcObj, subset(training, select = -c(classe, X)))
+## preprocessed test set
+testingPC <- predict(preProcObj, subset(testing, select = -c(classe, X)))
+```
+
+I builded and tested three models totally:
+
+* svm linear model - as I needed an easy and fast model to check if my data
+transformations improved the efficiency of the model or not (I could not use
+anything more sophisticated due to my very weak hardware setup)
+* random forests - as I've suspected this one will perform very good in terms
+of prediction accuracy
+* naive bayes - as a blind shot (which is very valuable strategy sometimes)
+
+```{r sample_ml1, results='hide', eval=FALSE}
+modelFit0 <- train(training$classe ~ ., data=trainingPC, method="svmLinear",  
+                  trControl = trainControl(method = "cv", number = 10))
+predictions0 <- predict(modelFit0, testingPC)
+confMat0 <- confusionMatrix(predictions0, testing$classe)
+```
+```{r sample_ml2, results='hide', eval=FALSE}
+modelFit1 <- train(training$classe ~ ., data=trainingPC, method="rf",  
+                  trControl = trainControl(method = "cv", number = 10))
+predictions1 <- predict(modelFit1, testingPC)
+confMat1 <- confusionMatrix(predictions1, testing$classe)
+```
+```{r sample_ml3, results='hide', eval=FALSE}
+modelFit2 <- train(training$classe ~ ., data=trainingPC, method="nb",  
+                  trControl = trainControl(method = "cv", number = 10))
+predictions2 <- predict(modelFit2, testingPC)
+confMat2 <- confusionMatrix(predictions2, testing$classe)
+```
+
+Expected out of sample errors are as follows:
+
+* svm linear model - 0.7905
+* random forests - 0.9987
+* naive bayes - 0.7663
+
+Therefore, the final choice is the random forests model (modelFit1) with the
+expected out of sample error as above. It passed all 20 predictions in
+assignment with the first try.
+
+<b>Last note for the graders: Note that testing few models on the testing set
+is not introducing overfitting. Every model was tuned up separately on the
+training set (using cross validation) and then applied only once to the test
+set.</b>
